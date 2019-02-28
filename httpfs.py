@@ -53,13 +53,13 @@ def handle_request(clientsocket, request):
         conn.sendall(response_bytes)
         return
     verb = match.group(1)
-    directory = match.group(2)
+    path = match.group(2)
     if verb == VERB_GET:
-        handle_get(clientsocket, directory)
+        handle_get(clientsocket, path)
         return
     if verb == VERB_POST:
-        # TODO: Write regex/method to get request body
-        #handle_post(directory, body)
+        body = get_request_body(request)
+        handle_post(clientsocket, path, body)
         return
         
 def handle_get(clientsocket, path):
@@ -96,8 +96,8 @@ def handle_get(clientsocket, path):
         response_bytes = bytes(response_str, encoding='ASCII')
         clientsocket.sendall(response_bytes)
 
+def handle_post(clientsocket, path, body):
 
-def handle_post(directory, body):
     return
 
 def write_response_headers(response_str, status_code):
@@ -107,6 +107,10 @@ def write_response_headers(response_str, status_code):
         response_str = f'Content-Type: text/plain\r\n{response_str}'
         response_str = f'HTTP/1.0 {status_code} {statuses[status_code]}\r\n{response_str}'
         return response_str
+
+def get_request_body(request):
+    index = request.find('\r\n\r\n')    
+    return request[index:].strip()
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
     s.bind((HOST, DEFAULT_PORT))
@@ -121,6 +125,6 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 if not data:
                     # Going outside the loop will close the socket
                     break
-                # Received data should contain the entirety of the request for this assignment
+                # TODO: Handle large requests (e.g. large files in post)
                 request = data.decode('ASCII')
                 handle_request(conn, request)
