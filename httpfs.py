@@ -2,8 +2,13 @@ import socket
 import re
 import os
 from datetime import datetime
+from os import listdir
+from os.path import abspath
+from os.path import isdir
+from os.path import isfile
+from os.path import dirname
 
-DIRNAME = os.path.dirname(__file__)
+DIRNAME = dirname(__file__)
 HOST = 'localhost'
 DEFAULT_PORT = 8080
 # Default folder is the one where httpfs.py is located (root folder)
@@ -26,7 +31,7 @@ REGEX_NO_COMMAND = rf"^{APP_NAME}$"
 REGEX_REQUEST = rf"^({VERB_GET}|{VERB_POST})\s+/([\w\./]+)*"
 
 # TODO: Programatically set value
-debug = True
+debug = False
 statuses = {
     200: "OK",
     400: "BAD REQUEST",
@@ -37,6 +42,9 @@ statuses = {
 def print_debug_info(address, data):
     if not data:
         print(f'[{datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S")} GMT] {address} end transmission.')
+        print()
+        print('=' * 50)
+        print()
         return
     print(f'[{datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S")} GMT] {address} sent:')
     print(f'{data}')
@@ -45,12 +53,13 @@ def handle_request(clientsocket, request):
     # First line of request contains which verb (GET/POST) and which directory/file
     match = re.search(REGEX_REQUEST, request)
     if match is None:
+        # Bad request
+        status = get_status(400)
         if debug: 
-            print('400 BAD REQUEST')
+            print(status)
             print(request)
-        response_str = write_response_headers(f'400 BAD REQUEST\r\n{request}\r\n\r\n', 400)
-        response_bytes = bytes(response_str, encoding='ASCII')
-        conn.sendall(response_bytes)
+        response_str = write_response_headers(f'{status}\r\n{request}\r\n\r\n', 400)
+        send_response(conn, response_str)
         return
     verb = match.group(1)
     path = match.group(2)
@@ -64,53 +73,114 @@ def handle_request(clientsocket, request):
         
 def handle_get(clientsocket, path):
     # Check that path is not outside server (application) root directory
-    if path is not None and DIRNAME.lower() not in os.path.abspath(path).lower():
-        response_str = write_response_headers('403 FORBIDDEN\r\n\r\n', 403)
-        response_bytes = bytes(response_str, encoding='ASCII')
-        clientsocket.sendall(response_bytes)
+    if path is not None and DIRNAME.lower() not in abspath(path).lower():
+        status = get_status(403)
+        msg = 'You do not have the permissions to GET outside the working directory.'
+        if debug:
+            print(status)
+            print(msg)
+        response_str = write_response_headers(f'{status}\r\n{msg}\r\n\r\n', 403)
+        send_response(clientsocket, response_str)
         return
 
-    if path is None or os.path.isdir(path):
-        contents = os.listdir(path)
+    if path is None or isdir(path):
+        # No need to print status code in response body if status is 200
+        contents = listdir(path)
+        if debug:
+            print(get_status(200))
+            path_str = path if path is not None else 'root'
+            print(f'{path_str} has {len(contents)} items')
+            print(contents)
         response_str = ''
         for f in contents:
             response_str += f + '\r\n'
         # Add another newline to denote end of response
         response_str += '\r\n'
         response_str = write_response_headers(response_str, 200)
-        response_bytes = bytes(response_str, encoding='ASCII')
-        clientsocket.sendall(response_bytes)
+        send_response(clientsocket, response_str)
         return
-    elif os.path.isfile(path):
+    elif isfile(path):
         with open(path) as f:
             contents = f.read()
             contents += '\r\n\r\n'
             response_str = write_response_headers(contents, 200)
-            response_bytes = bytes(response_str, encoding='ASCII')
-            clientsocket.sendall(response_bytes)
+            send_response(clientsocket, response_str)
             return
     else:
+        status = get_status(404)
         if debug:
-            print('404 NOT FOUND')
-        response_str = write_response_headers('404 NOT FOUND\r\n\r\n', 404)
-        response_bytes = bytes(response_str, encoding='ASCII')
-        clientsocket.sendall(response_bytes)
+            print(status)
+        response_str = write_response_headers(f'{status}\r\n\r\n', 404)
+        send_response(clientsocket, response_str)
 
 def handle_post(clientsocket, path, body):
+    # Cannot write to file if no path (filename) in request
+    # If path is a directory, then program needs explicit filename to write to
+    if path is None or isdir(path):
+        status = get_status(400)
+        msg = f'Path {path} is not a filename.'
+        if debug: 
+            print(status)
+            print(msg)
+        response_str = write_response_headers(f'{status}\r\n{msg}\r\n\r\n', 400)
+        send_response(clientsocket, response_str)
+        return
+    
+    # Check that path is not outside server (application) root directory
+    if path is not None and DIRNAME.lower() not in abspath(path).lower():
+        status = get_status(403)
+        msg = 'You do not have the permissions to POST outside the working directory.'
+        if debug:
+            print(status)
+            print(msg)
+        response_str = write_response_headers(f'{status}\r\n{msg}\r\n\r\n', 403)
+        send_response(clientsocket, response_str)
+        return   
 
-    return
+    # Prevent writing to this file
+    if __file__.lower() == abspath(path).lower():
+        status = get_status(403)
+        msg = 'You cannot write to this file.'
+        if debug:
+            print(status)
+            print(msg)
+        response_str = write_response_headers(f'{status}\r\n{msg}\r\n\r\n', 403)
+        send_response(clientsocket, response_str)
+        return
+
+    # Write to file
+    # Overwrite file if exists, otherwise create it
+    msg = ''
+    if isfile(path):
+        msg = f'Overwrote contents of {path} with:\r\n{body}'
+    else:
+        msg = f'File {path} created with contents:\r\n{body}'
+    with open(path, 'w+') as f:
+        f.write(body)
+    if debug:
+        print(get_status(200))
+        print(msg)
+    response_str = write_response_headers(msg + '\r\n\r\n', 200)
+    send_response(clientsocket, response_str)
 
 def write_response_headers(response_str, status_code):
-        # Prepend string with extra info for httpc's verbose flag
-        response_str = f'Content-Length: {len(response_str)}\r\n\r\n{response_str}'
-        response_str = f'Date: {datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S")} GMT\r\n{response_str}'
-        response_str = f'Content-Type: text/plain\r\n{response_str}'
-        response_str = f'HTTP/1.0 {status_code} {statuses[status_code]}\r\n{response_str}'
-        return response_str
+    # Prepend string with extra info for httpc's verbose flag
+    response_str = f'Content-Length: {len(response_str)}\r\n\r\n{response_str}'
+    response_str = f'Date: {datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S")} GMT\r\n{response_str}'
+    response_str = f'Content-Type: text/plain\r\n{response_str}'
+    response_str = f'HTTP/1.0 {status_code} {statuses[status_code]}\r\n{response_str}'
+    return response_str
+
+def send_response(clientsocket, response_str):
+    response_bytes = bytes(response_str, encoding='ASCII')
+    clientsocket.sendall(response_bytes)
 
 def get_request_body(request):
     index = request.find('\r\n\r\n')    
     return request[index:].strip()
+
+def get_status(status_code):
+    return f'{status_code} {statuses[status_code]}'
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
     s.bind((HOST, DEFAULT_PORT))
