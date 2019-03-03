@@ -1,6 +1,6 @@
 import socket
 import re
-import os
+from sys import exit
 from datetime import datetime
 from os import listdir
 from os.path import abspath
@@ -8,15 +8,16 @@ from os.path import isdir
 from os.path import isfile
 from os.path import dirname
 
-DIRNAME = dirname(__file__)
 HOST = 'localhost'
 DEFAULT_PORT = 8080
 # Default folder is the one where httpfs.py is located (root folder)
-DEFAULT_DIR = DIRNAME
+DEFAULT_DIR = dirname(__file__)
 BUFFER_SIZE = 4096 # in bytes
 APP_NAME = 'httpfs'
 COMMAND_QUIT = 'quit'
-FLAG_VERBOSE = '-v'
+COMMAND_HELP = 'help'
+COMMAND_LISTEN = 'listen'
+FLAG_DEBUG = '-v'
 FLAG_PORT = '-p'
 FLAG_DIR_PATH = '-d'
 VERB_GET = 'GET'
@@ -26,18 +27,22 @@ REGEX_FLAGS = r"(?P<flag>-{1,2}\S*)(?:[=:]?|\s+)(?P<params>[^-\s].*?)?(?=\s+[-\/
 # Taken from https://stackoverflow.com/questions/6038061/regular-expression-to-find-urls-within-a-string
 REGEX_URL = r"(http://)([\w_-]+(?:(?:\.[\w_-]+)+))([\w.,@?^=%&:/~+#-]*[\w@?^=%&/~+#-])?"
 # Command regexes
-REGEX_STARTS_WITH_APP_NAME = rf"^{APP_NAME}"
-REGEX_NO_COMMAND = rf"^{APP_NAME}$"
 REGEX_REQUEST = rf"^({VERB_GET}|{VERB_POST})\s+/([\w\./]+)*"
+# Taken from https://www.regextester.com/104339
+REGEX_PATH = r"(\\\\?([^\\/]*[\\/])*)([^\\/]+)$"
 
-# TODO: Programatically set value
 debug = False
+directory = DEFAULT_DIR
+port = DEFAULT_PORT
 statuses = {
     200: "OK",
     400: "BAD REQUEST",
     403: "FORBIDDEN",
     404: "NOT FOUND"
 }
+
+def help():
+    return
 
 def print_debug_info(address, data):
     if not data:
@@ -59,7 +64,7 @@ def handle_request(clientsocket, request):
             print(status)
             print(request)
         response_str = write_response_headers(f'{status}\r\n{request}\r\n\r\n', 400)
-        send_response(conn, response_str)
+        send_response(clientsocket, response_str)
         return
     verb = match.group(1)
     path = match.group(2)
@@ -73,7 +78,7 @@ def handle_request(clientsocket, request):
         
 def handle_get(clientsocket, path):
     # Check that path is not outside server (application) root directory
-    if path is not None and DIRNAME.lower() not in abspath(path).lower():
+    if path is not None and directory.lower() not in abspath(path).lower():
         status = get_status(403)
         msg = 'You do not have the permissions to GET outside the working directory.'
         if debug:
@@ -88,8 +93,8 @@ def handle_get(clientsocket, path):
         contents = listdir(path)
         if debug:
             print(get_status(200))
-            path_str = path if path is not None else 'root'
-            print(f'{path_str} has {len(contents)} items')
+            path_str = path if path else 'root'
+            print(f'Directory {path_str} has {len(contents)} item(s)')
             print(contents)
         response_str = ''
         for f in contents:
@@ -127,7 +132,7 @@ def handle_post(clientsocket, path, body):
         return
     
     # Check that path is not outside server (application) root directory
-    if path is not None and DIRNAME.lower() not in abspath(path).lower():
+    if path is not None and directory.lower() not in abspath(path).lower():
         status = get_status(403)
         msg = 'You do not have the permissions to POST outside the working directory.'
         if debug:
@@ -176,15 +181,63 @@ def send_response(clientsocket, response_str):
     clientsocket.sendall(response_bytes)
 
 def get_request_body(request):
+    # Get text immediately after headers
     index = request.find('\r\n\r\n')    
     return request[index:].strip()
 
 def get_status(status_code):
     return f'{status_code} {statuses[status_code]}'
 
+def get_flags(query):
+    flags = re.findall(REGEX_FLAGS, query)
+    return flags
+
+def is_number(value):
+    try:
+        int(value)
+    except ValueError:
+        return False
+    return True
+
+def parse_query(query):
+    if query == COMMAND_HELP:
+        help()
+        return False
+    flags = get_flags(query)
+    global debug, directory, port
+    for flag, value in flags:
+        if flag == FLAG_DEBUG:
+            debug = True
+        # if flag == FLAG_DIR_PATH:
+        #     if not value:
+        #         print(f'Please enter a valid absolute path for flag {FLAG_DIR_PATH}.')
+        #         return False
+        #     directory = value
+        if flag == FLAG_PORT:
+            if not value or not is_number(value) or not(0 < int(value) < 65535):
+                print('Please enter a positive number from 0 to 65535 for the port.') 
+                return False
+            port = int(value)
+    return True
+    # print(f"Unknown command. Type '{COMMAND_HELP}' for usage information.")
+    # return False
+
+is_valid = False
+# Enter app parameters before activating socket
+while True:
+    print()
+    print(f'{APP_NAME} > ', end='')
+    query = input()
+    if query == COMMAND_QUIT:
+        exit()
+    is_valid = parse_query(query)
+    if is_valid:
+        break
+
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    s.bind((HOST, DEFAULT_PORT))
+    s.bind((HOST, port))
     s.listen()
+    print(f'Listening on port {port} in directory {directory}...')
     while True:
         conn, addr = s.accept()
         with conn:
